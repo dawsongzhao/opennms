@@ -99,7 +99,7 @@ public class RrdOutputSocket {
             // m_messages.build().writeTo(out);
             out.flush();
         } catch (Throwable e) {
-            LOG.warn("Error when trying to open connection to {}:{}, dropping {} performance messages: {}", m_host, m_port, m_messageCount, e.getMessage());
+            LOG.warn("Error when trying to open connection to {}:{}, dropping {} performance messages: {}", m_host, m_port, m_messageCount, e.getMessage(), e);
         } finally {
             if (socket != null) {
                 try { 
