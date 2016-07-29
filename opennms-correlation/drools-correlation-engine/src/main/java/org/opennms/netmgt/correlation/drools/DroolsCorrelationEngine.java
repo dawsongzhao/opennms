@@ -28,8 +28,13 @@
 
 package org.opennms.netmgt.correlation.drools;
 
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
@@ -44,6 +49,9 @@ import org.kie.api.builder.KieBuilder;
 import org.kie.api.builder.KieFileSystem;
 import org.kie.api.builder.Message.Level;
 import org.kie.api.conf.EventProcessingOption;
+import org.kie.api.marshalling.KieMarshallers;
+import org.kie.api.marshalling.Marshaller;
+import org.kie.api.marshalling.ObjectMarshallingStrategy;
 import org.kie.api.runtime.KieContainer;
 import org.kie.api.runtime.KieSession;
 import org.opennms.netmgt.correlation.AbstractCorrelationEngine;
@@ -63,6 +71,7 @@ import com.google.common.io.ByteStreams;
 public class DroolsCorrelationEngine extends AbstractCorrelationEngine {
     private static final Logger LOG = LoggerFactory.getLogger(DroolsCorrelationEngine.class);
 
+    private KieBase m_kieBase;
     private KieSession m_kieSession;
     private List<String> m_interestingEvents;
     private List<Resource> m_rules;
@@ -70,7 +79,8 @@ public class DroolsCorrelationEngine extends AbstractCorrelationEngine {
     private String m_name;
     private String m_assertBehaviour;
     private String m_eventProcessingMode;
-    
+    private Boolean m_persistState;
+
     /** {@inheritDoc} */
     @Override
     public synchronized void correlate(final Event e) {
@@ -151,12 +161,16 @@ public class DroolsCorrelationEngine extends AbstractCorrelationEngine {
         }
         ruleBaseConfig.setEventProcessingMode(eventProcessingOption);
 
-        KieBase kieBase = kContainer.newKieBase(ruleBaseConfig);
-        m_kieSession = kieBase.newKieSession();
+        m_kieBase = kContainer.newKieBase(ruleBaseConfig);
+        m_kieSession = m_kieBase.newKieSession();
         m_kieSession.setGlobal("engine", this);
 
         for (final Map.Entry<String, Object> entry : m_globals.entrySet()) {
             m_kieSession.setGlobal(entry.getKey(), entry.getValue());
+        }
+
+        if (m_persistState != null && m_persistState) {
+            unmarshallStateFromDisk(true);
         }
     }
 
@@ -167,6 +181,48 @@ public class DroolsCorrelationEngine extends AbstractCorrelationEngine {
                 LOG.debug("Loading rules file: {}", rulesFile);
                 kfs.write(String.format("src/main/resources/" + rulesFile.getFilename(), ++k), ByteStreams.toByteArray(is));
             }
+        }
+    }
+
+    @Override
+    public void tearDown() {
+        if (m_persistState != null && m_persistState) {
+            marshallStateToDisk(true);
+        }
+    }
+
+    private Path getPathToState() {
+        return Paths.get(System.getProperty("java.io.tmpdir"), "drools.", m_name, ".state");
+    }
+
+    private void marshallStateToDisk(boolean serialize) {
+        final File stateFile = getPathToState().toFile();
+        LOG.debug("Saving state for engine {} in {} ...", m_name, stateFile);
+        final KieMarshallers kMarshallers = KieServices.Factory.get().getMarshallers();
+        final ObjectMarshallingStrategy oms = serialize ?
+                kMarshallers.newSerializeMarshallingStrategy() : kMarshallers.newIdentityMarshallingStrategy();
+        final Marshaller marshaller = kMarshallers.newMarshaller( m_kieBase, new ObjectMarshallingStrategy[]{ oms } );
+        try (FileOutputStream fos = new FileOutputStream(stateFile)) {
+            marshaller.marshall( fos, m_kieSession );
+            LOG.info("Sucessfully save state for engine {} in {}.", m_name, stateFile);
+        } catch (IOException e) {
+            LOG.error("Failed to save state for engine {} in {}.", m_name, stateFile, e);
+        }
+    }
+
+    private void unmarshallStateFromDisk(boolean serialize) {
+        final File stateFile = getPathToState().toFile();
+        LOG.debug("Restoring state for engine {} from {} ...", m_name, stateFile);
+        final KieMarshallers kMarshallers = KieServices.Factory.get().getMarshallers();
+        final ObjectMarshallingStrategy oms = serialize ?
+                kMarshallers.newSerializeMarshallingStrategy() : kMarshallers.newIdentityMarshallingStrategy();
+        final Marshaller marshaller = kMarshallers.newMarshaller( m_kieBase, new ObjectMarshallingStrategy[]{ oms } );
+
+        try (FileInputStream fin = new FileInputStream(stateFile)) {
+            marshaller.unmarshall( fin, m_kieSession );
+            LOG.info("Sucessfully restored state for engine {} from {}.", m_name, stateFile);
+        } catch (IOException | ClassNotFoundException e) {
+            LOG.error("Failed to restore state for engine {} from {}.", m_name, stateFile, e);
         }
     }
 
@@ -218,4 +274,18 @@ public class DroolsCorrelationEngine extends AbstractCorrelationEngine {
     public void setEventProcessingMode(String eventProcessingMode) {
         this.m_eventProcessingMode = eventProcessingMode;
     }
+
+    public void setPersistState(Boolean persistState) {
+        m_persistState = persistState;
+    }
+
+    public Boolean getPersistState() {
+        return m_persistState;
+    }
+
+    @Override
+    public String toString() {
+        return String.format("DroolsCorrelationEngine[%s]", m_name);
+    }
+
 }
